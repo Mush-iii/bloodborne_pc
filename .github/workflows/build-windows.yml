@@ -59,8 +59,8 @@ jobs:
         env:
           MSYS2_ROOT_WIN: ${{ steps.msys.outputs.msys2-location }}
           # Current MSYS2 libc++ no longer includes these transitively; FidelityFX relies on
-          # _countof, swprintf_s, placement new, log2, std::mutex.
-          CXXFLAGS: -include stdlib.h -include stdio.h -include wchar.h -include new -include cmath -include cstring -include cstdint -include algorithm -include mutex
+          # _countof, swprintf_s, placement new, log2, std::mutex, std::abort.
+          CXXFLAGS: -include stdlib.h -include stdio.h -include wchar.h -include new -include cmath -include cstring -include cstdint -include cstdlib -include cstdio -include cwchar -include cassert -include cstddef -include algorithm -include mutex -include string -include vector -include memory -include utility -include functional -include limits -include array -include map -include optional
         run: |
           export MSYS2_ROOT="$(cygpath -u "$MSYS2_ROOT_WIN")"
           git config --global --add safe.directory '*'
