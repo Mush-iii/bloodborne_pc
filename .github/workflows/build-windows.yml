@@ -58,6 +58,9 @@ jobs:
         shell: msys2 {0}
         env:
           MSYS2_ROOT_WIN: ${{ steps.msys.outputs.msys2-location }}
+          # Current MSYS2 libc++ no longer pulls stdlib.h/stdio.h/wchar.h in transitively;
+          # FidelityFX uses _countof and swprintf_s from them.
+          CXXFLAGS: -include stdlib.h -include stdio.h -include wchar.h
         run: |
           export MSYS2_ROOT="$(cygpath -u "$MSYS2_ROOT_WIN")"
           git config --global --add safe.directory '*'
