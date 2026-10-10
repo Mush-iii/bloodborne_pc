@@ -5,7 +5,13 @@
  *   WASD left stick, arrow keys right stick, Space Cross, LShift Circle,
  *   E Square, Q Triangle, 1 L1, 3 R1, R L2, F R2, Z L3, C R3,
  *   Enter Options, Tab left touchpad, Backspace right touchpad,
- *   IJKL d-pad (I up, K down, J left, L right). */
+ *   IJKL d-pad (I up, K down, J left, L right).
+ *
+ * Mouse & keyboard mode (bbport.ini mk_enabled, on by default; works alongside a gamepad):
+ *   mouse look right stick, LMB R1, Shift+LMB R2, RMB L2, Shift+RMB L1, MMB or Q R3,
+ *   WASD left stick, Space Circle, E/Enter Cross, R Square, X Triangle, C/Z L3,
+ *   Tab/G left touchpad, Backspace right touchpad, Esc Options,
+ *   arrows or 1-4 d-pad, IJKL right stick. With mk_enabled=0 the layout above applies. */
 #define _GNU_SOURCE
 #include "runtime.h"
 #include "gpu/bbgpu.h"
@@ -96,8 +102,15 @@ static void sample_host(PadData *d) {
     d->connected=1; d->connected_count=connected_count ? connected_count : 1;
     d->timestamp=now_us();
     SDL_Gamepad *g=current_gamepad();
-    if (bbgpu_overlay_captures_input()) return; /* settings menu open: neutral input */
+    if (bbgpu_overlay_captures_input()) { /* settings menu open: neutral input */
+        float dx, dy; bbgpu_consume_mouse_delta(&dx,&dy);
+        return;
+    }
     const bool *k=SDL_WasInit(SDL_INIT_VIDEO) ? SDL_GetKeyboardState(NULL) : NULL;
+    float mouse_dx=0, mouse_dy=0, sens_x=1, sens_y=1, deadzone=0.05f, smoothing=0.2f;
+    int inv_x=0, inv_y=0;
+    const int mk=bbgpu_get_mk_config(&sens_x,&sens_y,&inv_x,&inv_y,&deadzone,&smoothing);
+    bbgpu_consume_mouse_delta(&mouse_dx,&mouse_dy);
     if (g) {
         static const struct { SDL_GamepadButton sdl; uint32_t ps; } map[]={
             {SDL_GAMEPAD_BUTTON_SOUTH,BTN_CROSS}, {SDL_GAMEPAD_BUTTON_EAST,BTN_CIRCLE},
@@ -130,9 +143,50 @@ static void sample_host(PadData *d) {
         if ((d->buttons & BTN_TOUCHPAD) && !d->touch_count) touch_click(d,0);
         if (k && k[SDL_SCANCODE_TAB]) touch_click(d,0);
         if (k && k[SDL_SCANCODE_BACKSPACE]) touch_click(d,1);
-        return;
+        if (!mk) return; /* with mouse & keyboard mode on, they add to the pad */
     }
     if (!k) return;
+    if (mk) {
+        const SDL_MouseButtonFlags mb=SDL_GetMouseState(NULL,NULL);
+        const bool lmb=(mb & SDL_BUTTON_LMASK)!=0, rmb=(mb & SDL_BUTTON_RMASK)!=0, mmb=(mb & SDL_BUTTON_MMASK)!=0;
+        const bool shift=k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT];
+        if (lmb) d->buttons |= shift ? BTN_R2 : BTN_R1;
+        if (rmb) d->buttons |= shift ? BTN_L1 : BTN_L2;
+        if (mmb || k[SDL_SCANCODE_Q]) d->buttons |= BTN_R3;
+        if (k[SDL_SCANCODE_SPACE]) d->buttons |= BTN_CIRCLE;
+        if (k[SDL_SCANCODE_E] || k[SDL_SCANCODE_RETURN] || k[SDL_SCANCODE_KP_ENTER]) d->buttons |= BTN_CROSS;
+        if (k[SDL_SCANCODE_R]) d->buttons |= BTN_SQUARE;
+        if (k[SDL_SCANCODE_X]) d->buttons |= BTN_TRIANGLE;
+        if (k[SDL_SCANCODE_C] || k[SDL_SCANCODE_Z]) d->buttons |= BTN_L3;
+        if (k[SDL_SCANCODE_ESCAPE]) d->buttons |= BTN_OPTIONS;
+        if (k[SDL_SCANCODE_TAB] || k[SDL_SCANCODE_G]) touch_click(d,0);
+        if (k[SDL_SCANCODE_BACKSPACE]) touch_click(d,1);
+        if (k[SDL_SCANCODE_UP] || k[SDL_SCANCODE_1]) d->buttons |= BTN_UP;
+        if (k[SDL_SCANCODE_DOWN] || k[SDL_SCANCODE_2]) d->buttons |= BTN_DOWN;
+        if (k[SDL_SCANCODE_LEFT] || k[SDL_SCANCODE_3]) d->buttons |= BTN_LEFT;
+        if (k[SDL_SCANCODE_RIGHT] || k[SDL_SCANCODE_4]) d->buttons |= BTN_RIGHT;
+        if (k[SDL_SCANCODE_A]) d->left_x=0; else if (k[SDL_SCANCODE_D]) d->left_x=255;
+        if (k[SDL_SCANCODE_W]) d->left_y=0; else if (k[SDL_SCANCODE_S]) d->left_y=255;
+        /* Mouse look: smoothed delta onto the right stick; IJKL stay as a keyboard fallback. */
+        static float fx, fy;
+        fx=fx*smoothing+mouse_dx*(1.0f-smoothing);
+        fy=fy*smoothing+mouse_dy*(1.0f-smoothing);
+        float ax=fx*sens_x*8.0f, ay=fy*sens_y*8.0f;
+        if (inv_x) ax=-ax;
+        if (inv_y) ay=-ay;
+        if (ax>-deadzone*128.0f && ax<deadzone*128.0f) ax=0;
+        if (ay>-deadzone*128.0f && ay<deadzone*128.0f) ay=0;
+        if (k[SDL_SCANCODE_I]) d->right_y=0; else if (k[SDL_SCANCODE_K]) d->right_y=255;
+        if (k[SDL_SCANCODE_J]) d->right_x=0; else if (k[SDL_SCANCODE_L]) d->right_x=255;
+        if (mouse_dx!=0.0f || mouse_dy!=0.0f || ax!=0.0f || ay!=0.0f) {
+            int rx=128+(int)ax, ry=128+(int)ay;
+            d->right_x=(uint8_t)(rx<0 ? 0 : rx>255 ? 255 : rx);
+            d->right_y=(uint8_t)(ry<0 ? 0 : ry>255 ? 255 : ry);
+        }
+        if ((d->buttons & BTN_L2) && d->l2<255) d->l2=255;
+        if ((d->buttons & BTN_R2) && d->r2<255) d->r2=255;
+        return;
+    }
     static const struct { SDL_Scancode key; uint32_t ps; } keys[]={
         {SDL_SCANCODE_SPACE,BTN_CROSS}, {SDL_SCANCODE_LSHIFT,BTN_CIRCLE}, {SDL_SCANCODE_E,BTN_SQUARE},
         {SDL_SCANCODE_Q,BTN_TRIANGLE}, {SDL_SCANCODE_1,BTN_L1}, {SDL_SCANCODE_3,BTN_R1},

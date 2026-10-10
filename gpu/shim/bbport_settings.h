@@ -67,6 +67,14 @@ struct Values {
     std::atomic<float> reactive_max{0.9f};
     std::atomic<int> debug_view{DebugNone};
     std::atomic<bool> show_fps{false};
+    /// Mouse & keyboard controls (runtime_pad.c, window.cpp).
+    std::atomic<bool> mk_enabled{true};
+    std::atomic<float> mk_sens_x{1.0f};
+    std::atomic<float> mk_sens_y{1.0f};
+    std::atomic<bool> mk_invert_x{false};
+    std::atomic<bool> mk_invert_y{false};
+    std::atomic<float> mk_deadzone{0.05f};
+    std::atomic<float> mk_smoothing{0.2f};
     // FSR 4 checks (menu): the provider's auto exposure, the jitter sign it is given.
     std::atomic<bool> fsr4_auto_exposure{true};
     std::atomic<bool> fsr4_invert_jitter{false};
@@ -99,6 +107,8 @@ Values& Get();
 
 /// Reads the file, then the environment overrides. Called once at start.
 void Load();
+/// Re-reads the ini file at run time so external edits apply live.
+void Reload();
 /// Checks the loaded choice before the first frame; unsupported FSR 4 uses FSR 3.1.
 void ConfigureUpscalerSupport(bool fsr4, bool fsr411);
 /// After device creation: DLSS availability; a DLSS setting falls back to FSR 3.1 without it.

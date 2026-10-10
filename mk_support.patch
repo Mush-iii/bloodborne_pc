@@ -1,0 +1,395 @@
+diff -ru a/bloodborne_pc-windows/gpu/bbgpu.h out/gpu/bbgpu.h
+--- a/bloodborne_pc-windows/gpu/bbgpu.h	2026-10-08 21:15:26.000000000 +0000
++++ out/gpu/bbgpu.h	2026-10-10 03:31:08.081218992 +0000
+@@ -32,6 +32,10 @@
+ int bbgpu_text_input_poll(char *out_utf8, uint64_t size);
+ /* 1 while the in-game settings menu is open: the game's pad input is held neutral. */
+ int bbgpu_overlay_captures_input(void);
++/* Consumes mouse motion (pixels) accumulated since the last call. */
++void bbgpu_consume_mouse_delta(float *dx, float *dy);
++/* Returns 1 if mouse & keyboard mode is on; fills the camera settings. */
++int bbgpu_get_mk_config(float *sens_x, float *sens_y, int *invert_x, int *invert_y, float *deadzone, float *smoothing);
+ /* Number of symbols registered by the vendored libraries (diagnostics). */
+ unsigned bbgpu_symbol_count(void);
+ #ifdef __cplusplus
+diff -ru a/bloodborne_pc-windows/gpu/shim/bbgpu.cpp out/gpu/shim/bbgpu.cpp
+--- a/bloodborne_pc-windows/gpu/shim/bbgpu.cpp	2026-10-08 21:15:26.000000000 +0000
++++ out/gpu/shim/bbgpu.cpp	2026-10-10 03:31:08.081482697 +0000
+@@ -333,6 +333,26 @@
+     return BbOverlay::CapturesInput() ? 1 : 0;
+ }
+ 
++extern "C" void bbgpu_consume_mouse_delta(float* dx, float* dy) {
++    if (g_window) {
++        g_window->ConsumeMouseDelta(dx, dy);
++    } else {
++        if (dx) *dx = 0.0f;
++        if (dy) *dy = 0.0f;
++    }
++}
++
++extern "C" int bbgpu_get_mk_config(float* sens_x, float* sens_y, int* invert_x, int* invert_y, float* deadzone, float* smoothing) {
++    const auto& s = BbSettings::Get();
++    if (sens_x) *sens_x = s.mk_sens_x.load();
++    if (sens_y) *sens_y = s.mk_sens_y.load();
++    if (invert_x) *invert_x = s.mk_invert_x.load() ? 1 : 0;
++    if (invert_y) *invert_y = s.mk_invert_y.load() ? 1 : 0;
++    if (deadzone) *deadzone = s.mk_deadzone.load();
++    if (smoothing) *smoothing = s.mk_smoothing.load();
++    return s.mk_enabled.load() ? 1 : 0;
++}
++
+ extern "C" int bbgpu_text_input_begin(const char* initial, const char* prompt) {
+     if (!g_window) return 0;
+     g_window->BeginTextInput(initial ? initial : "", prompt ? prompt : "Text");
+diff -ru a/bloodborne_pc-windows/gpu/shim/bbport_overlay.cpp out/gpu/shim/bbport_overlay.cpp
+--- a/bloodborne_pc-windows/gpu/shim/bbport_overlay.cpp	2026-10-08 21:15:26.000000000 +0000
++++ out/gpu/shim/bbport_overlay.cpp	2026-10-10 03:31:27.804802356 +0000
+@@ -362,7 +362,7 @@
+     }
+     Hint("Эффекты включаются и выключаются патчами игры при запуске (patches/Bloodborne.xml). "
+          "Размытие в движении и тени от динамических источников заметно нагружают GPU.");
+-    Hint("Свободная камера: удерживайте Cross и нажимайте L3 (клавиатура: Space + Z). "
++    Hint("Свободная камера: удерживайте Cross и нажимайте L3 (клавиатура: Space + Z; в режиме M&K: E + Z). "
+          "Debug menu: левый touchpad / Tab. Нужны DbgFont14h.ccm и DbgFont14h.tpf "
+          "в dvdroot_ps4/font из мода Nexus #253. Правый touchpad: Backspace.");
+ 
+@@ -385,6 +385,21 @@
+     ImGui::SeparatorText("Прочее");
+     Checkbox("Счётчик FPS в углу", s.show_fps);
+ 
++    ImGui::SeparatorText("Управление мышью и клавиатурой (M&K)");
++    Checkbox("Включить управление мышью и клавиатурой", s.mk_enabled);
++    Hint("Обзор мышью (курсор захвачен), ЛКМ - R1, Shift+ЛКМ - R2, ПКМ - L2, Shift+ПКМ - L1, "
++         "СКМ или Q - R3, WASD - движение, Space - Circle (перекат), E / Enter - Cross, R - Square, "
++         "X - Triangle, C / Z - L3, Tab / G - левый touchpad, Backspace - правый, Esc - Options, "
++         "стрелки и 1-4 - крестовина, IJKL - правый стик. Выключено: прежняя раскладка клавиатуры.");
++    if (s.mk_enabled) {
++        Slider("Чувствительность по горизонтали (X)", s.mk_sens_x, 0.1f, 5.0f);
++        Slider("Чувствительность по вертикали (Y)", s.mk_sens_y, 0.1f, 5.0f);
++        Checkbox("Инвертировать обзор по горизонтали (X)", s.mk_invert_x);
++        Checkbox("Инвертировать обзор по вертикали (Y)", s.mk_invert_y);
++        Slider("Мёртвая зона мыши", s.mk_deadzone, 0.0f, 0.2f);
++        Slider("Сглаживание движений мыши", s.mk_smoothing, 0.0f, 0.8f);
++    }
++
+     ImGui::Spacing();
+     if (ImGui::Button("Закрыть")) {
+         keep_open = false;
+diff -ru a/bloodborne_pc-windows/gpu/shim/bbport_settings.cpp out/gpu/shim/bbport_settings.cpp
+--- a/bloodborne_pc-windows/gpu/shim/bbport_settings.cpp	2026-10-08 21:15:26.000000000 +0000
++++ out/gpu/shim/bbport_settings.cpp	2026-10-10 03:31:14.071234926 +0000
+@@ -52,6 +52,20 @@
+         v.debug_view = std::clamp(i, 0, DebugViewCount - 1);
+     } else if (key == "show_fps") {
+         v.show_fps = i != 0;
++    } else if (key == "mk_enabled") {
++        v.mk_enabled = i != 0;
++    } else if (key == "mk_sens_x") {
++        v.mk_sens_x = Clamp(f, 0.1f, 10.0f);
++    } else if (key == "mk_sens_y") {
++        v.mk_sens_y = Clamp(f, 0.1f, 10.0f);
++    } else if (key == "mk_invert_x") {
++        v.mk_invert_x = i != 0;
++    } else if (key == "mk_invert_y") {
++        v.mk_invert_y = i != 0;
++    } else if (key == "mk_deadzone") {
++        v.mk_deadzone = Clamp(f, 0.0f, 0.5f);
++    } else if (key == "mk_smoothing") {
++        v.mk_smoothing = Clamp(f, 0.0f, 1.0f);
+     } else if (key == "fsr4_auto_exposure") {
+         v.fsr4_auto_exposure = i != 0;
+     } else if (key == "fsr4_invert_jitter") {
+@@ -130,6 +144,28 @@
+     v.startup_live_resolution = v.live_resolution;
+ }
+ 
++void Reload() {
++    auto& v = Get();
++    if (FILE* file = std::fopen(Path(), "r")) {
++        char line[256];
++        while (std::fgets(line, sizeof(line), file)) {
++            std::string text{line};
++            text.erase(text.find_last_not_of(" \t\r\n") + 1);
++            const auto eq = text.find('=');
++            if (text.empty() || text[0] == '#' || eq == std::string::npos) {
++                continue;
++            }
++            // Only the mouse & keyboard keys are live: the rest (upscaler fallbacks, startup
++            // patches) must not be reverted by what the file still says.
++            const std::string key = text.substr(0, eq);
++            if (key.rfind("mk_", 0) == 0) {
++                Set(v, key, text.substr(eq + 1));
++            }
++        }
++        std::fclose(file);
++    }
++}
++
+ void ConfigureUpscalerSupport(bool fsr4, bool fsr411) {
+     auto& v = Get();
+     v.fsr4_supported = fsr4;
+@@ -188,13 +224,17 @@
+                  "# bbport settings (in-game menu: Insert / L3+R3)\n"
+                  "upscaler=%s\npreset=%d\nsharpen=%d\nsharpness=%.2f\njitter=%d\n"
+                  "reactive=%d\nobject_motion=%d\nreactive_scale=%.2f\nreactive_threshold=%.2f\nreactive_max=%.2f\n"
+-                 "debug_view=%d\nshow_fps=%d\nfsr4_auto_exposure=%d\nfsr4_invert_jitter=%d\n",
++                 "debug_view=%d\nshow_fps=%d\nfsr4_auto_exposure=%d\nfsr4_invert_jitter=%d\n"
++                 "mk_enabled=%d\nmk_sens_x=%.2f\nmk_sens_y=%.2f\nmk_invert_x=%d\nmk_invert_y=%d\nmk_deadzone=%.2f\nmk_smoothing=%.2f\n",
+                  UpscalerName(v.upscaler), v.preset.load(), int(v.sharpen.load()),
+                  v.sharpness.load(), int(v.jitter.load()), int(v.reactive.load()),
+                  int(v.object_motion.load()),
+                  v.reactive_scale.load(), v.reactive_threshold.load(), v.reactive_max.load(),
+                  v.debug_view.load(), int(v.show_fps.load()),
+-                 int(v.fsr4_auto_exposure.load()), int(v.fsr4_invert_jitter.load()));
++                 int(v.fsr4_auto_exposure.load()), int(v.fsr4_invert_jitter.load()),
++                 int(v.mk_enabled.load()), v.mk_sens_x.load(), v.mk_sens_y.load(),
++                 int(v.mk_invert_x.load()), int(v.mk_invert_y.load()),
++                 v.mk_deadzone.load(), v.mk_smoothing.load());
+     // Read by patches.py at start.
+     for (int e = 0; e < EffectCount; ++e) {
+         std::fprintf(file, "%s=%d\n", Effects[e].key, int(v.effects[e].load()));
+diff -ru a/bloodborne_pc-windows/gpu/shim/bbport_settings.h out/gpu/shim/bbport_settings.h
+--- a/bloodborne_pc-windows/gpu/shim/bbport_settings.h	2026-10-08 21:15:26.000000000 +0000
++++ out/gpu/shim/bbport_settings.h	2026-10-10 03:31:08.081631732 +0000
+@@ -67,6 +67,14 @@
+     std::atomic<float> reactive_max{0.9f};
+     std::atomic<int> debug_view{DebugNone};
+     std::atomic<bool> show_fps{false};
++    /// Mouse & keyboard controls (runtime_pad.c, window.cpp).
++    std::atomic<bool> mk_enabled{true};
++    std::atomic<float> mk_sens_x{1.0f};
++    std::atomic<float> mk_sens_y{1.0f};
++    std::atomic<bool> mk_invert_x{false};
++    std::atomic<bool> mk_invert_y{false};
++    std::atomic<float> mk_deadzone{0.05f};
++    std::atomic<float> mk_smoothing{0.2f};
+     // FSR 4 checks (menu): the provider's auto exposure, the jitter sign it is given.
+     std::atomic<bool> fsr4_auto_exposure{true};
+     std::atomic<bool> fsr4_invert_jitter{false};
+@@ -99,6 +107,8 @@
+ 
+ /// Reads the file, then the environment overrides. Called once at start.
+ void Load();
++/// Re-reads the ini file at run time so external edits apply live.
++void Reload();
+ /// Checks the loaded choice before the first frame; unsupported FSR 4 uses FSR 3.1.
+ void ConfigureUpscalerSupport(bool fsr4, bool fsr411);
+ /// After device creation: DLSS availability; a DLSS setting falls back to FSR 3.1 without it.
+diff -ru a/bloodborne_pc-windows/gpu/shim/sdl_window.h out/gpu/shim/sdl_window.h
+--- a/bloodborne_pc-windows/gpu/shim/sdl_window.h	2026-10-08 21:15:26.000000000 +0000
++++ out/gpu/shim/sdl_window.h	2026-10-10 03:31:27.804319862 +0000
+@@ -34,11 +34,19 @@
+     void BeginTextInput(const std::string& initial, const std::string& prompt);
+     /// 0 while typing, 1 confirmed (Enter), 2 cancelled (Escape); text is UTF-8.
+     int PollTextInput(std::string& text);
++    /// Mouse motion (pixels) accumulated since the last call, for the pad's right stick.
++    void ConsumeMouseDelta(float* dx, float* dy);
+ 
+ private:
+     std::atomic<s32> width, height;
+     std::atomic<bool> is_open{true};
+     std::mutex text_mutex;
++    std::mutex mouse_delta_mutex;
++    float accumulated_mouse_dx = 0.0f;
++    float accumulated_mouse_dy = 0.0f;
++    bool relative_mouse_active = false;
++    uint64_t last_mouse_motion_ms = 0;
++    bool mouse_cursor_hidden = false;
+     bool text_requested{}, text_active{};
+     int text_state{};
+     std::string text, text_prompt, base_title;
+diff -ru a/bloodborne_pc-windows/gpu/shim/window.cpp out/gpu/shim/window.cpp
+--- a/bloodborne_pc-windows/gpu/shim/window.cpp	2026-10-08 21:15:26.000000000 +0000
++++ out/gpu/shim/window.cpp	2026-10-10 03:31:27.804491004 +0000
+@@ -6,6 +6,7 @@
+ #include "common/logging/log.h"
+ #include "sdl_window.h"
+ #include "bbport_overlay.h"
++#include "bbport_settings.h"
+ 
+ namespace Frontend {
+ 
+@@ -53,6 +54,7 @@
+     width = w;
+     height = h;
+     LOG_INFO(Frontend, "Window {}x{} on {}", w, h, driver);
++    last_mouse_motion_ms = SDL_GetTicks();
+ }
+ 
+ WindowSDL::~WindowSDL() {
+@@ -122,9 +124,22 @@
+             UpdateTextTitle();
+             continue;
+         }
++        if (event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
++            event.type == SDL_EVENT_MOUSE_BUTTON_UP || event.type == SDL_EVENT_MOUSE_WHEEL) {
++            last_mouse_motion_ms = SDL_GetTicks();
++            if (mouse_cursor_hidden && !relative_mouse_active) {
++                SDL_ShowCursor();
++                mouse_cursor_hidden = false;
++            }
++        }
+         if (BbOverlay::HandleEvent(event)) {
+             continue;
+         }
++        if (event.type == SDL_EVENT_MOUSE_MOTION && relative_mouse_active) {
++            std::scoped_lock lock{mouse_delta_mutex};
++            accumulated_mouse_dx += event.motion.xrel;
++            accumulated_mouse_dy += event.motion.yrel;
++        }
+         switch (event.type) {
+         case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+         case SDL_EVENT_WINDOW_RESIZED: {
+@@ -142,7 +157,52 @@
+             break;
+         }
+     }
++
++    // Pick up edits to the mouse & keyboard settings made outside the game.
++    static uint64_t last_ini_check_ms = 0;
++    const uint64_t now_ms = SDL_GetTicks();
++    if (now_ms - last_ini_check_ms >= 500) {
++        last_ini_check_ms = now_ms;
++        BbSettings::Reload();
++    }
++
++    // Mouse & keyboard mode grabs the mouse (relative mode); menus and text entry release it.
++    const bool overlay_capturing = BbOverlay::CapturesInput() || text_active;
++    const bool want_relative = BbSettings::Get().mk_enabled.load() && !overlay_capturing;
++    if (want_relative != relative_mouse_active) {
++        relative_mouse_active = want_relative;
++        SDL_SetWindowRelativeMouseMode(window, want_relative);
++        if (want_relative) {
++            SDL_HideCursor();
++            mouse_cursor_hidden = true;
++            std::scoped_lock lock{mouse_delta_mutex};
++            accumulated_mouse_dx = accumulated_mouse_dy = 0.0f;
++        } else {
++            SDL_ShowCursor();
++            mouse_cursor_hidden = false;
++        }
++    }
++    if (!relative_mouse_active) {
++        // Hide the idle cursor after 3 seconds, except while a menu is open.
++        if (!overlay_capturing) {
++            if (!mouse_cursor_hidden && now_ms - last_mouse_motion_ms >= 3000) {
++                SDL_HideCursor();
++                mouse_cursor_hidden = true;
++            }
++        } else if (mouse_cursor_hidden) {
++            SDL_ShowCursor();
++            mouse_cursor_hidden = false;
++        }
++    }
+     return is_open;
+ }
+ 
++void WindowSDL::ConsumeMouseDelta(float* dx, float* dy) {
++    std::scoped_lock lock{mouse_delta_mutex};
++    if (dx) *dx = accumulated_mouse_dx;
++    if (dy) *dy = accumulated_mouse_dy;
++    accumulated_mouse_dx = 0.0f;
++    accumulated_mouse_dy = 0.0f;
++}
++
+ } // namespace Frontend
+diff -ru a/bloodborne_pc-windows/src/runtime_pad.c out/src/runtime_pad.c
+--- a/bloodborne_pc-windows/src/runtime_pad.c	2026-10-08 21:15:26.000000000 +0000
++++ out/src/runtime_pad.c	2026-10-10 03:31:42.571130563 +0000
+@@ -5,7 +5,13 @@
+  *   WASD left stick, arrow keys right stick, Space Cross, LShift Circle,
+  *   E Square, Q Triangle, 1 L1, 3 R1, R L2, F R2, Z L3, C R3,
+  *   Enter Options, Tab left touchpad, Backspace right touchpad,
+- *   IJKL d-pad (I up, K down, J left, L right). */
++ *   IJKL d-pad (I up, K down, J left, L right).
++ *
++ * Mouse & keyboard mode (bbport.ini mk_enabled, on by default; works alongside a gamepad):
++ *   mouse look right stick, LMB R1, Shift+LMB R2, RMB L2, Shift+RMB L1, MMB or Q R3,
++ *   WASD left stick, Space Circle, E/Enter Cross, R Square, X Triangle, C/Z L3,
++ *   Tab/G left touchpad, Backspace right touchpad, Esc Options,
++ *   arrows or 1-4 d-pad, IJKL right stick. With mk_enabled=0 the layout above applies. */
+ #define _GNU_SOURCE
+ #include "runtime.h"
+ #include "gpu/bbgpu.h"
+@@ -96,8 +102,15 @@
+     d->connected=1; d->connected_count=connected_count ? connected_count : 1;
+     d->timestamp=now_us();
+     SDL_Gamepad *g=current_gamepad();
+-    if (bbgpu_overlay_captures_input()) return; /* settings menu open: neutral input */
++    if (bbgpu_overlay_captures_input()) { /* settings menu open: neutral input */
++        float dx, dy; bbgpu_consume_mouse_delta(&dx,&dy);
++        return;
++    }
+     const bool *k=SDL_WasInit(SDL_INIT_VIDEO) ? SDL_GetKeyboardState(NULL) : NULL;
++    float mouse_dx=0, mouse_dy=0, sens_x=1, sens_y=1, deadzone=0.05f, smoothing=0.2f;
++    int inv_x=0, inv_y=0;
++    const int mk=bbgpu_get_mk_config(&sens_x,&sens_y,&inv_x,&inv_y,&deadzone,&smoothing);
++    bbgpu_consume_mouse_delta(&mouse_dx,&mouse_dy);
+     if (g) {
+         static const struct { SDL_GamepadButton sdl; uint32_t ps; } map[]={
+             {SDL_GAMEPAD_BUTTON_SOUTH,BTN_CROSS}, {SDL_GAMEPAD_BUTTON_EAST,BTN_CIRCLE},
+@@ -130,9 +143,50 @@
+         if ((d->buttons & BTN_TOUCHPAD) && !d->touch_count) touch_click(d,0);
+         if (k && k[SDL_SCANCODE_TAB]) touch_click(d,0);
+         if (k && k[SDL_SCANCODE_BACKSPACE]) touch_click(d,1);
+-        return;
++        if (!mk) return; /* with mouse & keyboard mode on, they add to the pad */
+     }
+     if (!k) return;
++    if (mk) {
++        const SDL_MouseButtonFlags mb=SDL_GetMouseState(NULL,NULL);
++        const bool lmb=(mb & SDL_BUTTON_LMASK)!=0, rmb=(mb & SDL_BUTTON_RMASK)!=0, mmb=(mb & SDL_BUTTON_MMASK)!=0;
++        const bool shift=k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT];
++        if (lmb) d->buttons |= shift ? BTN_R2 : BTN_R1;
++        if (rmb) d->buttons |= shift ? BTN_L1 : BTN_L2;
++        if (mmb || k[SDL_SCANCODE_Q]) d->buttons |= BTN_R3;
++        if (k[SDL_SCANCODE_SPACE]) d->buttons |= BTN_CIRCLE;
++        if (k[SDL_SCANCODE_E] || k[SDL_SCANCODE_RETURN] || k[SDL_SCANCODE_KP_ENTER]) d->buttons |= BTN_CROSS;
++        if (k[SDL_SCANCODE_R]) d->buttons |= BTN_SQUARE;
++        if (k[SDL_SCANCODE_X]) d->buttons |= BTN_TRIANGLE;
++        if (k[SDL_SCANCODE_C] || k[SDL_SCANCODE_Z]) d->buttons |= BTN_L3;
++        if (k[SDL_SCANCODE_ESCAPE]) d->buttons |= BTN_OPTIONS;
++        if (k[SDL_SCANCODE_TAB] || k[SDL_SCANCODE_G]) touch_click(d,0);
++        if (k[SDL_SCANCODE_BACKSPACE]) touch_click(d,1);
++        if (k[SDL_SCANCODE_UP] || k[SDL_SCANCODE_1]) d->buttons |= BTN_UP;
++        if (k[SDL_SCANCODE_DOWN] || k[SDL_SCANCODE_2]) d->buttons |= BTN_DOWN;
++        if (k[SDL_SCANCODE_LEFT] || k[SDL_SCANCODE_3]) d->buttons |= BTN_LEFT;
++        if (k[SDL_SCANCODE_RIGHT] || k[SDL_SCANCODE_4]) d->buttons |= BTN_RIGHT;
++        if (k[SDL_SCANCODE_A]) d->left_x=0; else if (k[SDL_SCANCODE_D]) d->left_x=255;
++        if (k[SDL_SCANCODE_W]) d->left_y=0; else if (k[SDL_SCANCODE_S]) d->left_y=255;
++        /* Mouse look: smoothed delta onto the right stick; IJKL stay as a keyboard fallback. */
++        static float fx, fy;
++        fx=fx*smoothing+mouse_dx*(1.0f-smoothing);
++        fy=fy*smoothing+mouse_dy*(1.0f-smoothing);
++        float ax=fx*sens_x*8.0f, ay=fy*sens_y*8.0f;
++        if (inv_x) ax=-ax;
++        if (inv_y) ay=-ay;
++        if (ax>-deadzone*128.0f && ax<deadzone*128.0f) ax=0;
++        if (ay>-deadzone*128.0f && ay<deadzone*128.0f) ay=0;
++        if (k[SDL_SCANCODE_I]) d->right_y=0; else if (k[SDL_SCANCODE_K]) d->right_y=255;
++        if (k[SDL_SCANCODE_J]) d->right_x=0; else if (k[SDL_SCANCODE_L]) d->right_x=255;
++        if (mouse_dx!=0.0f || mouse_dy!=0.0f || ax!=0.0f || ay!=0.0f) {
++            int rx=128+(int)ax, ry=128+(int)ay;
++            d->right_x=(uint8_t)(rx<0 ? 0 : rx>255 ? 255 : rx);
++            d->right_y=(uint8_t)(ry<0 ? 0 : ry>255 ? 255 : ry);
++        }
++        if ((d->buttons & BTN_L2) && d->l2<255) d->l2=255;
++        if ((d->buttons & BTN_R2) && d->r2<255) d->r2=255;
++        return;
++    }
+     static const struct { SDL_Scancode key; uint32_t ps; } keys[]={
+         {SDL_SCANCODE_SPACE,BTN_CROSS}, {SDL_SCANCODE_LSHIFT,BTN_CIRCLE}, {SDL_SCANCODE_E,BTN_SQUARE},
+         {SDL_SCANCODE_Q,BTN_TRIANGLE}, {SDL_SCANCODE_1,BTN_L1}, {SDL_SCANCODE_3,BTN_R1},
+diff -ru a/bloodborne_pc-windows/tests/test_pad.c out/tests/test_pad.c
+--- a/bloodborne_pc-windows/tests/test_pad.c	2026-10-08 21:15:26.000000000 +0000
++++ out/tests/test_pad.c	2026-10-10 03:32:03.143246944 +0000
+@@ -5,6 +5,8 @@
+ 
+ static int capture;
+ int bbgpu_overlay_captures_input(void) { return capture; }
++void bbgpu_consume_mouse_delta(float *dx, float *dy) { if (dx) *dx = 0.0f; if (dy) *dy = 0.0f; }
++int bbgpu_get_mk_config(float *sx, float *sy, int *ix, int *iy, float *dz, float *sm) { (void)sx; (void)sy; (void)ix; (void)iy; (void)dz; (void)sm; return 0; } /* M&K off: the tests cover the base layout */
+ uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *name) {
+     (void)table; (void)count; (void)name;
+     return 0;

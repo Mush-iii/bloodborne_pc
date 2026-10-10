@@ -362,7 +362,7 @@ void Menu() {
     }
     Hint("Эффекты включаются и выключаются патчами игры при запуске (patches/Bloodborne.xml). "
          "Размытие в движении и тени от динамических источников заметно нагружают GPU.");
-    Hint("Свободная камера: удерживайте Cross и нажимайте L3 (клавиатура: Space + Z). "
+    Hint("Свободная камера: удерживайте Cross и нажимайте L3 (клавиатура: Space + Z; в режиме M&K: E + Z). "
          "Debug menu: левый touchpad / Tab. Нужны DbgFont14h.ccm и DbgFont14h.tpf "
          "в dvdroot_ps4/font из мода Nexus #253. Правый touchpad: Backspace.");
 
@@ -384,6 +384,21 @@ void Menu() {
 
     ImGui::SeparatorText("Прочее");
     Checkbox("Счётчик FPS в углу", s.show_fps);
+
+    ImGui::SeparatorText("Управление мышью и клавиатурой (M&K)");
+    Checkbox("Включить управление мышью и клавиатурой", s.mk_enabled);
+    Hint("Обзор мышью (курсор захвачен), ЛКМ - R1, Shift+ЛКМ - R2, ПКМ - L2, Shift+ПКМ - L1, "
+         "СКМ или Q - R3, WASD - движение, Space - Circle (перекат), E / Enter - Cross, R - Square, "
+         "X - Triangle, C / Z - L3, Tab / G - левый touchpad, Backspace - правый, Esc - Options, "
+         "стрелки и 1-4 - крестовина, IJKL - правый стик. Выключено: прежняя раскладка клавиатуры.");
+    if (s.mk_enabled) {
+        Slider("Чувствительность по горизонтали (X)", s.mk_sens_x, 0.1f, 5.0f);
+        Slider("Чувствительность по вертикали (Y)", s.mk_sens_y, 0.1f, 5.0f);
+        Checkbox("Инвертировать обзор по горизонтали (X)", s.mk_invert_x);
+        Checkbox("Инвертировать обзор по вертикали (Y)", s.mk_invert_y);
+        Slider("Мёртвая зона мыши", s.mk_deadzone, 0.0f, 0.2f);
+        Slider("Сглаживание движений мыши", s.mk_smoothing, 0.0f, 0.8f);
+    }
 
     ImGui::Spacing();
     if (ImGui::Button("Закрыть")) {
